@@ -47,6 +47,9 @@ import {
   isGenerationMode,
   listSessions,
   loadSession,
+  MAX_SESSION_TITLE,
+  normalizeSessionTitle,
+  renameSession,
   saveSession,
 } from "./sessions.js";
 import type { GenerationMode, Grid, MergeWeights, ParseResult, SessionState, TokenUsage, TurnRecord } from "./types.js";
@@ -96,7 +99,9 @@ function rebuildGallery(s: SessionState): void {
       );
     })
     .join("\n");
-  const html = `<!doctype html><meta charset="utf-8"><title>gallery ${s.id}</title>
+  const sessionLabel = s.title ? `${escapeHTML(s.title)}（${s.id}）` : s.id;
+  const pageTitle = s.title ? `${escapeHTML(s.title)} · gallery ${s.id}` : `gallery ${s.id}`;
+  const html = `<!doctype html><meta charset="utf-8"><title>${pageTitle}</title>
 <style>body{background:#14141c;color:#e0e0e0;font-family:system-ui;padding:24px}
 h1{font-size:18px}main{display:flex;flex-wrap:wrap;gap:16px}
 figure{margin:0;background:#1e1e2a;padding:10px;border-radius:8px;text-align:center}
@@ -105,7 +110,8 @@ figure{margin:0;background:#1e1e2a;padding:10px;border-radius:8px;text-align:cen
 .gallery-variant small{font-size:11px;color:#9a9ab0}
 img{width:180px;image-rendering:pixelated;background:#fff}
 figcaption{font-size:12px;margin-top:8px;color:#9a9ab0;max-width:576px;word-break:break-all}</style>
-<h1>会话 ${s.id} · 多轮画廊 · 累计 ¥${s.spend.toFixed(4)}</h1><main>${items || "<p>暂无生成记录</p>"}</main>`;
+<h1>会话 ${sessionLabel} · 多轮画廊 · 累计 ¥${s.spend.toFixed(4)}</h1><main>${items || "<p>暂无生成记录</p>"}</main>`;
+  mkdirSync(config.previewDir, { recursive: true });
   writeFileSync(join(config.previewDir, `gallery_${s.id}.html`), html, "utf8");
 }
 
@@ -326,6 +332,25 @@ app.get("/api/sessions", (_req, res) => {
 app.get("/api/session/:id", (req, res) => {
   const s = loadSession(req.params.id);
   if (!s) return res.status(404).json({ error: "会话不存在" });
+  res.json({ session: s });
+});
+
+/** 重命名会话；空名称恢复默认显示（会话 ID） */
+app.post("/api/session/:id/rename", (req, res) => {
+  const s = loadSession(req.params.id);
+  if (!s) return res.status(404).json({ error: "会话不存在" });
+  const { title } = req.body ?? {};
+  if (typeof title !== "string") return res.status(400).json({ error: "title 必须是字符串" });
+  if (normalizeSessionTitle(title).length > MAX_SESSION_TITLE) {
+    return res.status(400).json({ error: `title 最多 ${MAX_SESSION_TITLE} 个字符` });
+  }
+  renameSession(s, title);
+  try {
+    rebuildGallery(s);
+  } catch (e) {
+    // 名称已保存；画廊刷新失败不应让前端误以为重命名失败
+    console.warn(`[session ${s.id}] 重命名后刷新画廊失败:`, e);
+  }
   res.json({ session: s });
 });
 

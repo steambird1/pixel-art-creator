@@ -95,6 +95,8 @@ export interface SessionSettings {
 
 export interface SessionState {
   id: string;
+  /** 用户自定义名称；空字符串表示使用“会话 <id>”默认名 */
+  title: string;
   createdAt: string;
   messages: ChatTurn[];
   turns: TurnRecord[];

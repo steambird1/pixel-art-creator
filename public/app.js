@@ -25,6 +25,7 @@ const state = {
 
 const PREFS_KEY = "drawing_util_prefs";
 const PALETTE_SELECT_CUSTOM = "__custom__";
+const SESSION_TITLE_MAX = 80;
 
 /* ---------------- API ---------------- */
 
@@ -329,6 +330,16 @@ async function loadPaletteVariants() {
 
 /* ---------------- 会话 ---------------- */
 
+function sessionName(session) {
+  const title = typeof session?.title === "string" ? session.title.trim() : "";
+  return title || `会话 ${session?.id ?? ""}`;
+}
+
+function updateDocumentTitle() {
+  const title = typeof state.session?.title === "string" ? state.session.title.trim() : "";
+  document.title = title ? `${title} · drawing_util` : "drawing_util · AI 像素画工坊";
+}
+
 async function refreshSessionList(selectId) {
   const { sessions } = await api("/api/sessions");
   const sel = $("sessionSelect");
@@ -339,7 +350,8 @@ async function refreshSessionList(selectId) {
     const turns = Number(s.turns ?? 0);
     const images = Number(s.images ?? turns);
     const count = images > turns ? `${turns} 轮 / ${images} 图` : `${turns} 轮`;
-    opt.textContent = `会话 ${s.id} · ${count} · ¥${(s.spend ?? 0).toFixed(3)}`;
+    opt.textContent = `${sessionName(s)} · ${count} · ¥${(s.spend ?? 0).toFixed(3)}`;
+    opt.title = `会话 ID：${s.id}${s.title ? ` · 名称：${s.title}` : ""}`;
     sel.appendChild(opt);
   }
   if (sessions.length === 0) {
@@ -360,6 +372,7 @@ async function openSession(id) {
   const { session } = await api(`/api/session/${id}`);
   state.sessionId = id;
   state.session = session;
+  updateDocumentTitle();
   $("galleryLink").href = `/preview/gallery_${id}.html`;
   $("galleryLink").hidden = false;
 
@@ -391,14 +404,56 @@ async function newSession() {
   $("input").focus();
 }
 
+async function renameCurrentSession() {
+  if (!state.sessionId || state.busy) return;
+  const id = state.sessionId;
+  const current = typeof state.session?.title === "string" ? state.session.title.trim() : "";
+  const name = current || id;
+  const input = prompt(
+    `重命名会话 ${name}\n留空则恢复默认名称（会话 ${id}）；最多 ${SESSION_TITLE_MAX} 个字符。`,
+    current,
+  );
+  if (input === null) return;
+  const title = input.replace(/\s+/g, " ").trim();
+  if (title.length > SESSION_TITLE_MAX) {
+    alert(`名称最多 ${SESSION_TITLE_MAX} 个字符。`);
+    return;
+  }
+  if (title === current) return;
+  state.busy = true;
+  $("renameSessionBtn").disabled = true;
+  $("sendBtn").disabled = true;
+  try {
+    const { session } = await api(`/api/session/${id}/rename`, {
+      method: "POST",
+      body: { title },
+    });
+    state.session = session;
+    updateDocumentTitle();
+    try {
+      await refreshSessionList(id);
+    } catch (e) {
+      console.warn("刷新会话列表失败", e);
+    }
+    $("input").focus();
+  } catch (e) {
+    alert(`重命名失败：${e.message}`);
+  } finally {
+    state.busy = false;
+    $("renameSessionBtn").disabled = false;
+    $("sendBtn").disabled = false;
+  }
+}
+
 async function deleteCurrentSession() {
   if (!state.sessionId || state.busy) return;
   const id = state.sessionId;
+  const name = state.session?.title?.trim() || id;
   const images = state.session?.turns?.length ?? 0;
   const dsl = state.dslEditing ? "\n当前未应用的 DSL 修改也会丢失。" : "";
   if (
     !confirm(
-      `删除会话 ${id}（${images} 条变体记录）？\n会话 JSON、预览图和画廊都会被删除，且不可恢复。${dsl}`,
+      `删除会话 ${name}（${images} 条变体记录）？\n会话 JSON、预览图和画廊都会被删除，且不可恢复。${dsl}`,
     )
   ) {
     return;
@@ -1497,6 +1552,7 @@ $("input").addEventListener("keydown", (ev) => {
 });
 
 $("newSessionBtn").addEventListener("click", newSession);
+$("renameSessionBtn").addEventListener("click", renameCurrentSession);
 $("deleteSessionBtn").addEventListener("click", deleteCurrentSession);
 
 $("sessionSelect").addEventListener("change", (ev) => openSession(ev.target.value));

@@ -26,6 +26,15 @@ export function defaultSettings(): SessionSettings {
   return { mode: "auto", costLimit: config.defaultCostLimit, palette: clonePalette(DEFAULT_PALETTE) };
 }
 
+/** 会话名称最大长度（字符） */
+export const MAX_SESSION_TITLE = 80;
+
+/** 规范化会话名称：折叠空白并去掉首尾空格；非字符串视为空名称 */
+export function normalizeSessionTitle(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/\s+/g, " ").trim();
+}
+
 /** 兼容旧会话文件：缺字段时补默认值，并按轮次费用重算累计花费 */
 function normalizeSession(raw: any): SessionState {
   const turns: TurnRecord[] = Array.isArray(raw.turns) ? raw.turns : [];
@@ -39,6 +48,7 @@ function normalizeSession(raw: any): SessionState {
   const costLimit = Number(settings.costLimit);
   return {
     id: String(raw.id ?? ""),
+    title: normalizeSessionTitle(raw.title).slice(0, MAX_SESSION_TITLE),
     createdAt: String(raw.createdAt ?? new Date().toISOString()),
     messages: Array.isArray(raw.messages) ? raw.messages : [],
     turns,
@@ -57,6 +67,7 @@ export function createSession(settings?: Partial<SessionSettings>): SessionState
   const base = defaultSettings();
   const s: SessionState = {
     id: randomUUID().slice(0, 8),
+    title: "",
     createdAt: new Date().toISOString(),
     messages: [],
     turns: [],
@@ -122,6 +133,7 @@ export function countGenerationTurns(turns: TurnRecord[]): number {
 
 export function listSessions(): Array<{
   id: string;
+  title: string;
   createdAt: string;
   turns: number;
   images: number;
@@ -134,6 +146,7 @@ export function listSessions(): Array<{
       return s
         ? {
             id: s.id,
+            title: s.title,
             createdAt: s.createdAt,
             turns: countGenerationTurns(s.turns),
             images: s.turns.length,
@@ -142,10 +155,17 @@ export function listSessions(): Array<{
         : null;
     })
     .filter(
-      (x): x is { id: string; createdAt: string; turns: number; images: number; spend: number } =>
+      (x): x is { id: string; title: string; createdAt: string; turns: number; images: number; spend: number } =>
         x !== null,
     )
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** 设置会话名称并落盘；空名称表示恢复默认显示 */
+export function renameSession(s: SessionState, title: string): SessionState {
+  s.title = normalizeSessionTitle(title).slice(0, MAX_SESSION_TITLE);
+  saveSession(s);
+  return s;
 }
 
 export function appendTurn(s: SessionState, turn: TurnRecord): void {

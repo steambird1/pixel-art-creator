@@ -12,6 +12,9 @@ import {
   groupTurns,
   listSessions,
   loadSession,
+  MAX_SESSION_TITLE,
+  normalizeSessionTitle,
+  renameSession,
   saveSession,
 } from "../src/sessions.js";
 import { EMPTY_USAGE } from "../src/pricing.js";
@@ -112,6 +115,31 @@ test("sessions: 删除会话会移除 JSON，且拒绝非法 / 不存在 id", ()
     assert.equal(loadSession(s.id), null);
     assert.equal(deleteSession(s.id), false);
     assert.equal(deleteSession("../bad"), false);
+  } finally {
+    config.sessionsDir = original;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sessions: 重命名会规范化标题、持久化并出现在列表", () => {
+  const original = config.sessionsDir;
+  const dir = mkdtempSync(join(tmpdir(), "drawing-util-sessions-"));
+  config.sessionsDir = dir;
+  try {
+    assert.equal(normalizeSessionTitle("  森林 \n 地图  "), "森林 地图");
+    assert.equal(normalizeSessionTitle(123), "");
+
+    const s = createSession();
+    renameSession(s, "  森林 \n 地图  ");
+    assert.equal(s.title, "森林 地图");
+    assert.equal(loadSession(s.id)?.title, "森林 地图");
+    assert.equal(listSessions().find((x) => x.id === s.id)?.title, "森林 地图");
+
+    renameSession(s, "x".repeat(MAX_SESSION_TITLE + 10));
+    assert.equal(s.title.length, MAX_SESSION_TITLE);
+
+    renameSession(s, "");
+    assert.equal(loadSession(s.id)?.title, "");
   } finally {
     config.sessionsDir = original;
     rmSync(dir, { recursive: true, force: true });
