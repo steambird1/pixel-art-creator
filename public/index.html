@@ -45,6 +45,7 @@
       <div class="session-bar">
         <button id="newSessionBtn" title="新建会话">＋ 新会话</button>
         <select id="sessionSelect" title="切换会话"></select>
+        <button id="deleteSessionBtn" class="danger" title="删除当前会话及其预览 / 画廊文件">🗑 删除会话</button>
       </div>
       <div id="chat" class="chat"></div>
       <div id="status" class="status" hidden></div>
@@ -121,6 +122,7 @@
           </div>
           <div id="placeholder" class="placeholder">在左侧输入需求，生成后此处显示像素预览</div>
         </div>
+        <div id="groupVariants" class="group-variants" hidden></div>
         <div class="tools">
           <label class="chk"><input type="checkbox" id="gridToggle"> 显示像素网格</label>
           <label class="chk" title="每 16×16 像素显示一条 tile 边界线"><input type="checkbox" id="tileGridToggle"> 显示 tile 网格</label>

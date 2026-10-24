@@ -83,6 +83,9 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 /* 会话栏 */
 .session-bar { display: flex; gap: 8px; }
 .session-bar select { flex: 1; min-width: 0; }
+.session-bar button { white-space: nowrap; }
+.session-bar button.danger { color: var(--danger); }
+.session-bar button.danger:hover { border-color: var(--danger); }
 
 /* 聊天 */
 .chat {
@@ -251,6 +254,23 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .size-x { color: var(--muted); }
 #sizeHint { color: var(--muted); font-size: 11px; white-space: nowrap; }
 #sizeHint.bad { color: var(--danger); }
+
+/* 组图变体切换条 */
+.group-variants { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.group-variants button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.group-variants button.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); color: var(--text); }
+.group-variants img { width: 44px; height: auto; image-rendering: pixelated; background: #fff; border-radius: 3px; display: block; }
+.group-variants span { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .tools { display: flex; gap: 14px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 .tools .chk { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
@@ -532,6 +552,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 /* 历史轮次 */
 .history { display: flex; gap: 10px; flex-wrap: wrap; min-height: 60px; }
 .history figure {
+  position: relative;
   margin: 0;
   background: var(--panel2);
   border: 1px solid var(--line);
@@ -543,6 +564,18 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .history figure.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .history img { width: 84px; height: auto; image-rendering: pixelated; background: #fff; border-radius: 3px; display: block; }
 .history figcaption { font-size: 11px; color: var(--muted); margin-top: 4px; max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history .group-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(18, 18, 26, .88);
+  color: var(--accent2);
+  font-size: 10px;
+  line-height: 16px;
+}
 
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }

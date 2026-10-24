@@ -336,7 +336,10 @@ async function refreshSessionList(selectId) {
   for (const s of sessions) {
     const opt = document.createElement("option");
     opt.value = s.id;
-    opt.textContent = `会话 ${s.id} · ${s.turns} 轮 · ¥${(s.spend ?? 0).toFixed(3)}`;
+    const turns = Number(s.turns ?? 0);
+    const images = Number(s.images ?? turns);
+    const count = images > turns ? `${turns} 轮 / ${images} 图` : `${turns} 轮`;
+    opt.textContent = `会话 ${s.id} · ${count} · ¥${(s.spend ?? 0).toFixed(3)}`;
     sel.appendChild(opt);
   }
   if (sessions.length === 0) {
@@ -386,6 +389,42 @@ async function newSession() {
   await openSession(session.id);
   scrollChatToBottom();
   $("input").focus();
+}
+
+async function deleteCurrentSession() {
+  if (!state.sessionId || state.busy) return;
+  const id = state.sessionId;
+  const images = state.session?.turns?.length ?? 0;
+  const dsl = state.dslEditing ? "\n当前未应用的 DSL 修改也会丢失。" : "";
+  if (
+    !confirm(
+      `删除会话 ${id}（${images} 条变体记录）？\n会话 JSON、预览图和画廊都会被删除，且不可恢复。${dsl}`,
+    )
+  ) {
+    return;
+  }
+  state.busy = true;
+  $("deleteSessionBtn").disabled = true;
+  $("sendBtn").disabled = true;
+  try {
+    await api(`/api/session/${id}`, { method: "DELETE" });
+    state.sessionId = null;
+    state.session = null;
+    state.viewTurn = null;
+    state.dslEditing = false;
+    state.dslApplying = false;
+    $("galleryLink").hidden = true;
+    const nextId = await refreshSessionList();
+    await openSession(nextId);
+    scrollChatToBottom();
+    $("input").focus();
+  } catch (e) {
+    alert(`删除会话失败：${e.message}`);
+  } finally {
+    state.busy = false;
+    $("deleteSessionBtn").disabled = false;
+    $("sendBtn").disabled = false;
+  }
 }
 
 async function saveSettings(patch) {
@@ -540,6 +579,49 @@ function turnImageUrl(turn) {
   return v ? `${turn.png}?v=${encodeURIComponent(v)}` : turn.png;
 }
 
+/** 组图变体在数据层仍是多条 TurnRecord；这里只在展示层合并成逻辑轮次 */
+function historyGroups() {
+  const groups = [];
+  const byId = new Map();
+  for (const t of state.session?.turns ?? []) {
+    if (t.groupId) {
+      const existing = byId.get(t.groupId);
+      if (existing) {
+        existing.variants.push(t);
+        continue;
+      }
+    }
+    const group = { groupId: t.groupId ?? null, variants: [t] };
+    groups.push(group);
+    if (t.groupId) byId.set(t.groupId, group);
+  }
+  const labels = new Map();
+  groups.forEach((group, groupIndex) => {
+    group.variants.forEach((t, variantIndex) => {
+      labels.set(t.index, {
+        group,
+        groupIndex: groupIndex + 1,
+        variantIndex: variantIndex + 1,
+        variantCount: group.variants.length,
+      });
+    });
+  });
+  return { groups, labels };
+}
+
+function groupInfoFor(turn) {
+  if (!turn) return null;
+  return historyGroups().labels.get(turn.index) ?? null;
+}
+
+function turnDisplayLabel(turn, info = groupInfoFor(turn)) {
+  if (!turn) return "";
+  const groupIndex = info?.groupIndex ?? turn.index;
+  return info && info.variantCount > 1
+    ? `第 ${groupIndex} 轮 · 组图 ${info.variantIndex}/${info.variantCount}`
+    : `第 ${groupIndex} 轮`;
+}
+
 function setDslEditMode(editing) {
   state.dslEditing = !!editing;
   const turn = state.viewTurn;
@@ -574,21 +656,23 @@ function showTurn(turn) {
     $("turnMeta").textContent = "";
     $("tileInfo").hidden = true;
     $("tileBox").hidden = true;
+    $("groupVariants").hidden = true;
+    $("groupVariants").innerHTML = "";
     return;
   }
+  const info = groupInfoFor(turn);
   $("previewImg").src = turn.imageData || turnImageUrl(turn);
-  $("turnTitle").textContent = `第 ${turn.index} 轮`;
+  $("turnTitle").textContent = turnDisplayLabel(turn, info);
 
   const cost = Number.isFinite(turn.cost) ? ` · ¥${turn.cost.toFixed(4)}` : "";
   const tier = turn.source === "trace" ? "本地描摹" : turn.tierLabel || MODE_LABEL[turn.mode] || "";
   const tries = turn.attempts > 1 ? ` · ${turn.attempts} 次尝试` : "";
   const tiles = turn.tileStats ? ` · ${turn.tileStats.total} tiles` : "";
   const palette = turn.palette ? ` · ${paletteLabel(turn.palette)}` : "";
-  const group = turn.groupId ? ` · 组图 ${turn.groupId}` : "";
   const edited = turn.editedAt ? " · 手动编辑" : "";
   const scale = turn.scale ? ` · ${turn.scale}×` : "";
   const time = turn.createdAt?.slice(11, 19) ?? "";
-  $("turnMeta").textContent = `${turn.width}×${turn.height}${cost} · ${tier}${tries}${tiles}${palette}${group}${edited}${scale} · ${time}`;
+  $("turnMeta").textContent = `${turn.width}×${turn.height}${cost} · ${tier}${tries}${tiles}${palette}${edited}${scale} · ${time}`;
 
   $("downloadBtn").href = turnImageUrl(turn);
   $("downloadBtn").download = `turn_${String(turn.index).padStart(3, "0")}.png`;
@@ -607,7 +691,33 @@ function showTurn(turn) {
 
   renderTileInfo(turn);
   updateGridOverlay();
+  renderGroupVariants(turn, info);
   renderHistoryActive();
+}
+
+function renderGroupVariants(turn, info = groupInfoFor(turn)) {
+  const box = $("groupVariants");
+  box.innerHTML = "";
+  if (!turn || !info || info.variantCount <= 1) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  info.group.variants.forEach((variant, i) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = variant.index === turn.index ? "active" : "";
+    const pal = variant.palette ? paletteLabel(variant.palette) : "";
+    btn.title = `${turnDisplayLabel(variant, { ...info, variantIndex: i + 1 })} · ${variant.width}×${variant.height}${pal ? ` · ${pal}` : ""}`;
+    const img = document.createElement("img");
+    img.src = turnImageUrl(variant);
+    img.alt = `组图变体 ${i + 1}`;
+    const label = document.createElement("span");
+    label.textContent = `${i + 1}/${info.variantCount}${pal ? ` ${pal}` : ""}`;
+    btn.append(img, label);
+    btn.onclick = () => showTurn(variant);
+    box.appendChild(btn);
+  });
 }
 
 function renderTileInfo(turn) {
@@ -827,7 +937,8 @@ async function openBatchPreview(turn, epsilon) {
 async function undoMergePlan() {
   if (!state.viewTurn || state.busy) return;
   const index = state.viewTurn.index;
-  if (!confirm(`撤销第 ${index} 轮的合并，恢复基准画面？`)) return;
+  const label = turnDisplayLabel(state.viewTurn);
+  if (!confirm(`撤销${label} 的合并，恢复基准画面？`)) return;
   state.busy = true;
   try {
     await api(`/api/session/${state.sessionId}/turn/${index}/merge-plan/undo`, { method: "POST" });
@@ -955,32 +1066,58 @@ function updateGridOverlay() {
 function renderHistory() {
   const box = $("history");
   box.innerHTML = "";
-  const turns = state.session?.turns ?? [];
-  if (!turns.length) {
+  const { groups } = historyGroups();
+  if (!groups.length) {
     box.innerHTML = '<span class="meta">暂无</span>';
     return;
   }
-  for (const t of turns) {
+  groups.forEach((group, groupIndex) => {
+    const first = group.variants[0];
+    const count = group.variants.length;
+    const shown = first;
+    const pal = shown.palette ? ` · ${paletteLabel(shown.palette)}` : "";
+    const tier = shown.source === "trace" ? "本地描摹" : shown.tierLabel ?? MODE_LABEL[shown.mode] ?? "";
+    const tiles = shown.tileStats ? ` · ${shown.tileStats.total} tiles` : "";
+    const cost = group.variants.reduce((sum, t) => sum + (Number.isFinite(t.cost) ? t.cost : 0), 0);
+    const title = `第 ${groupIndex + 1} 轮${count > 1 ? ` · 组图 ${count} 张` : ""} · ${shown.width}×${shown.height} · ${tier}${tiles}${pal}${Number.isFinite(cost) ? ` · ¥${cost.toFixed(4)}` : ""}`;
+
     const fig = document.createElement("figure");
-    fig.dataset.turn = t.index;
-    fig.dataset.group = t.groupId ?? "";
-    const pal = t.palette ? ` · ${paletteLabel(t.palette)}` : "";
-    fig.title = `${t.width}×${t.height} · ${t.source === "trace" ? "本地描摹" : t.tierLabel ?? MODE_LABEL[t.mode] ?? ""}${t.tileStats ? ` · ${t.tileStats.total} tiles` : ""}${pal}${t.groupId ? ` · 组图 ${t.groupId}` : ""}${Number.isFinite(t.cost) ? ` · ¥${t.cost.toFixed(4)}` : ""}`;
+    fig.dataset.turns = group.variants.map((t) => t.index).join(",");
+    fig.dataset.group = group.groupId ?? "";
+    fig.title = title;
+    if (count > 1) fig.classList.add("grouped");
+
     const img = document.createElement("img");
-    img.src = turnImageUrl(t);
-    img.alt = `turn ${t.index}`;
+    img.src = turnImageUrl(shown);
+    img.alt = count > 1 ? `第 ${groupIndex + 1} 轮组图` : `turn ${first.index}`;
     const cap = document.createElement("figcaption");
-    cap.textContent = `#${t.index} ${t.width}×${t.height}${pal}${Number.isFinite(t.cost) ? ` · ¥${t.cost.toFixed(3)}` : ""}`;
+    cap.textContent =
+      `第 ${groupIndex + 1} 轮${count > 1 ? ` · 组图 ${count} 张` : ""} · ${shown.width}×${shown.height}${pal}` +
+      (Number.isFinite(cost) ? ` · ¥${cost.toFixed(3)}` : "");
     fig.append(img, cap);
-    fig.onclick = () => showTurn(t);
+
+    if (count > 1) {
+      const badge = document.createElement("span");
+      badge.className = "group-badge";
+      badge.textContent = `×${count}`;
+      fig.appendChild(badge);
+    }
+
+    fig.onclick = () => {
+      const idx = state.viewTurn?.index;
+      const active = idx === undefined ? null : group.variants.find((t) => t.index === idx);
+      showTurn(active ?? first);
+    };
     box.appendChild(fig);
-  }
+  });
   renderHistoryActive();
 }
 
 function renderHistoryActive() {
+  const current = state.viewTurn?.index;
   document.querySelectorAll("#history figure").forEach((fig) => {
-    fig.classList.toggle("active", Number(fig.dataset.turn) === state.viewTurn?.index);
+    const indices = (fig.dataset.turns || "").split(",").map(Number);
+    fig.classList.toggle("active", Number.isFinite(current) && indices.includes(current));
   });
 }
 
@@ -1152,7 +1289,11 @@ async function send(text, opts = {}) {
     }
     $("chat").appendChild(b);
     scrollChatToBottom();
-    showTurn(state.session.turns[state.session.turns.length - 1]);
+    const firstNew = Number(data.turns?.[0]?.index);
+    const target = Number.isFinite(firstNew)
+      ? state.session.turns.find((t) => t.index === firstNew)
+      : null;
+    showTurn(target ?? state.session.turns[state.session.turns.length - 1]);
     await refreshSessionList(state.sessionId);
   } catch (e) {
     const data = e.data ?? {};
@@ -1187,12 +1328,23 @@ async function send(text, opts = {}) {
 
 async function backToThisTurn() {
   if (!state.viewTurn || state.busy) return;
-  const idx = state.viewTurn.index;
-  if (!confirm(`回到第 ${idx} 轮？其后的轮次记录将被丢弃，会话从该图继续修改。`)) return;
+  const selected = state.viewTurn;
+  const info = groupInfoFor(selected);
+  const target = info?.group.variants[0] ?? selected;
+  const groupIndex = info?.groupIndex ?? selected.index;
+  const groupNote = info && info.variantCount > 1 ? `（组图 ${info.variantCount} 张会一起保留）` : "";
+  if (!confirm(`回到第 ${groupIndex} 轮${groupNote}？其后的轮次记录将被丢弃，会话从该图继续修改。`)) return;
   try {
-    await api(`/api/session/${state.sessionId}/back`, { method: "POST", body: { turn: idx } });
+    await api(`/api/session/${state.sessionId}/back`, {
+      method: "POST",
+      body: { turn: target.index },
+    });
     await openSession(state.sessionId);
-    $("chat").appendChild(bubble("hint", `已回到第 ${idx} 轮，可在左侧继续输入以修改这张图。`));
+    const kept = state.session.turns.find((t) => t.index === selected.index);
+    if (kept) showTurn(kept);
+    $("chat").appendChild(
+      bubble("hint", `已回到第 ${groupIndex} 轮${groupNote}，可在左侧继续输入以修改这张图。`),
+    );
     scrollChatToBottom();
     await refreshSessionList(state.sessionId);
   } catch (e) {
@@ -1304,10 +1456,11 @@ async function saveDslEdit() {
     const updated = state.session.turns.find((t) => t.index === turn.index);
     if (updated) showTurn(updated);
     $("dslBox").open = true;
+    const displayLabel = turnDisplayLabel(updated ?? turn);
     const group = data.turns?.length > 1 ? `（组图 ${data.turns.length} 张已同步）` : "";
     const warning = data.warning ? ` ${data.warning}` : "";
     $("chat").appendChild(
-      bubble("hint", `已应用第 ${turn.index} 轮 DSL${group}；未调用模型，未计费。${warning}`),
+      bubble("hint", `已应用${displayLabel} 的 DSL${group}；未调用模型，未计费。${warning}`),
     );
     scrollChatToBottom();
   } catch (e) {
@@ -1344,6 +1497,7 @@ $("input").addEventListener("keydown", (ev) => {
 });
 
 $("newSessionBtn").addEventListener("click", newSession);
+$("deleteSessionBtn").addEventListener("click", deleteCurrentSession);
 
 $("sessionSelect").addEventListener("change", (ev) => openSession(ev.target.value));
 

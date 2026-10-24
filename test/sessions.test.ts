@@ -4,7 +4,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { config } from "../src/config.js";
-import { backToTurn, createSession } from "../src/sessions.js";
+import {
+  backToTurn,
+  countGenerationTurns,
+  createSession,
+  deleteSession,
+  groupTurns,
+  listSessions,
+  loadSession,
+  saveSession,
+} from "../src/sessions.js";
 import { EMPTY_USAGE } from "../src/pricing.js";
 import type { TurnRecord } from "../src/types.js";
 
@@ -48,6 +57,61 @@ test("sessions: 回到旧轮次不会扣减累计费用", () => {
     assert.equal(updated!.spend, 0.03);
     // 历史截断到该轮生成前
     assert.equal(updated!.messages.length, 2);
+  } finally {
+    config.sessionsDir = original;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sessions: 同一 groupId 的组图变体算一个逻辑轮次", () => {
+  const a = turn(1, 2, 0.01);
+  const b = turn(2, 2, 0);
+  const c = turn(3, 4, 0.02);
+  a.groupId = "g1";
+  b.groupId = "g1";
+
+  const groups = groupTurns([a, b, c]);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0].map((t) => t.index), [1, 2]);
+  assert.deepEqual(groups[1].map((t) => t.index), [3]);
+  assert.equal(countGenerationTurns([a, b, c]), 2);
+});
+
+test("sessions: 会话列表按逻辑轮次计数，并保留图片数", () => {
+  const original = config.sessionsDir;
+  const dir = mkdtempSync(join(tmpdir(), "drawing-util-sessions-"));
+  config.sessionsDir = dir;
+  try {
+    const s = createSession();
+    const a = turn(1, 2, 0.01);
+    const b = turn(2, 2, 0);
+    const c = turn(3, 4, 0.02);
+    a.groupId = "g1";
+    b.groupId = "g1";
+    s.turns = [a, b, c];
+    saveSession(s);
+
+    const summary = listSessions().find((x) => x.id === s.id);
+    assert.ok(summary);
+    assert.equal(summary!.turns, 2);
+    assert.equal(summary!.images, 3);
+  } finally {
+    config.sessionsDir = original;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sessions: 删除会话会移除 JSON，且拒绝非法 / 不存在 id", () => {
+  const original = config.sessionsDir;
+  const dir = mkdtempSync(join(tmpdir(), "drawing-util-sessions-"));
+  config.sessionsDir = dir;
+  try {
+    const s = createSession();
+    assert.ok(loadSession(s.id));
+    assert.equal(deleteSession(s.id), true);
+    assert.equal(loadSession(s.id), null);
+    assert.equal(deleteSession(s.id), false);
+    assert.equal(deleteSession("../bad"), false);
   } finally {
     config.sessionsDir = original;
     rmSync(dir, { recursive: true, force: true });

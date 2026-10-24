@@ -1,6 +1,6 @@
 import express from "express";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
 import { BudgetExceededError, GenerationError, generateWithRepair } from "./chat.js";
@@ -40,7 +40,10 @@ import {
 import { MAX_DIM, MAX_RENDER_SIDE, MIN_DIM } from "./limits.js";
 import {
   backToTurn,
+  countGenerationTurns,
   createSession,
+  deleteSession,
+  groupTurns,
   isGenerationMode,
   listSessions,
   loadSession,
@@ -65,19 +68,31 @@ function previewPath(sessionId: string, file: string): string {
   return join(dir, file);
 }
 
-/** 每次成功生成后重建该会话的 gallery.html */
+/** 每次成功生成后重建该会话的 gallery.html；组图变体合并为一个 figure */
 function rebuildGallery(s: SessionState): void {
-  const items = s.turns
-    .map((t) => {
-      const src = `${t.png}?v=${encodeURIComponent(t.updatedAt ?? t.createdAt)}`;
-      const tiles = t.tileStats ? ` · ${t.tileStats.total} tiles` : "";
-      const pal = t.palette ? ` · ${t.palette.label ?? t.palette.name}` : "";
-      const group = t.groupId ? ` · 组 ${t.groupId}` : "";
-      const srcTag = t.source === "trace" ? " · 描摹" : "";
-      const edited = t.editedAt ? " · 手动编辑" : "";
+  const items = groupTurns(s.turns)
+    .map((variants, groupIndex) => {
+      const first = variants[0];
+      const groupCount = variants.length;
+      const images = variants
+        .map((t) => {
+          const src = `${t.png}?v=${encodeURIComponent(t.updatedAt ?? t.createdAt)}`;
+          const pal = t.palette ? escapeHTML(t.palette.label ?? t.palette.name) : "";
+          return (
+            `<span class="gallery-variant"><a href="${src}" target="_blank"><img src="${src}" alt="turn ${t.index}"></a>` +
+            (pal ? `<small>${pal}</small>` : "") +
+            `</span>`
+          );
+        })
+        .join("");
+      const tiles = first.tileStats ? ` · ${first.tileStats.total} tiles` : "";
+      const pal = groupCount === 1 && first.palette ? ` · ${escapeHTML(first.palette.label ?? first.palette.name)}` : "";
+      const srcTag = variants.some((t) => t.source === "trace") ? " · 描摹" : "";
+      const edited = variants.some((t) => t.editedAt) ? " · 手动编辑" : "";
+      const cost = variants.reduce((sum, t) => sum + (t.cost ?? 0), 0);
       return (
-        `<figure><a href="${src}" target="_blank"><img src="${src}" alt="turn ${t.index}"></a>` +
-        `<figcaption>#${t.index} · ${t.width}×${t.height}${tiles}${pal}${group}${srcTag}${edited} · ¥${(t.cost ?? 0).toFixed(4)}<br>${escapeHTML(t.prompt)}</figcaption></figure>`
+        `<figure><div class="gallery-imgs">${images}</div>` +
+        `<figcaption>第 ${groupIndex + 1} 轮${groupCount > 1 ? ` · 组图 ${groupCount} 张` : ""} · ${first.width}×${first.height}${tiles}${pal}${srcTag}${edited} · ¥${cost.toFixed(4)}<br>${escapeHTML(first.prompt)}</figcaption></figure>`
       );
     })
     .join("\n");
@@ -85,8 +100,11 @@ function rebuildGallery(s: SessionState): void {
 <style>body{background:#14141c;color:#e0e0e0;font-family:system-ui;padding:24px}
 h1{font-size:18px}main{display:flex;flex-wrap:wrap;gap:16px}
 figure{margin:0;background:#1e1e2a;padding:10px;border-radius:8px;text-align:center}
-img{width:256px;image-rendering:pixelated;background:#fff}
-figcaption{font-size:12px;margin-top:6px;color:#9a9ab0;max-width:256px;word-break:break-all}</style>
+.gallery-imgs{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:576px}
+.gallery-variant{display:flex;flex-direction:column;gap:4px;align-items:center}
+.gallery-variant small{font-size:11px;color:#9a9ab0}
+img{width:180px;image-rendering:pixelated;background:#fff}
+figcaption{font-size:12px;margin-top:8px;color:#9a9ab0;max-width:576px;word-break:break-all}</style>
 <h1>会话 ${s.id} · 多轮画廊 · 累计 ¥${s.spend.toFixed(4)}</h1><main>${items || "<p>暂无生成记录</p>"}</main>`;
   writeFileSync(join(config.previewDir, `gallery_${s.id}.html`), html, "utf8");
 }
@@ -309,6 +327,26 @@ app.get("/api/session/:id", (req, res) => {
   const s = loadSession(req.params.id);
   if (!s) return res.status(404).json({ error: "会话不存在" });
   res.json({ session: s });
+});
+
+/** 删除会话及其预览图 / 画廊文件 */
+app.delete("/api/session/:id", (req, res) => {
+  const id = req.params.id;
+  const s = loadSession(id);
+  if (!s) return res.status(404).json({ error: "会话不存在" });
+  try {
+    if (!deleteSession(id)) return res.status(404).json({ error: "会话不存在" });
+  } catch (e) {
+    return res.status(500).json({ error: `删除会话失败：${e instanceof Error ? e.message : String(e)}` });
+  }
+  try {
+    rmSync(join(config.previewDir, id), { recursive: true, force: true });
+    rmSync(join(config.previewDir, `gallery_${id}.html`), { force: true });
+  } catch (e) {
+    // 会话本身已删除；预览清理失败不应让前端误以为删除失败
+    console.warn(`[session ${id}] 删除预览文件失败:`, e);
+  }
+  res.json({ ok: true, id });
 });
 
 /** 保存会话设置（模式 / 费用上限） */
@@ -955,7 +993,7 @@ app.post("/api/chat", async (req, res) => {
     rebuildGallery(s);
 
     const first = turns[0];
-    const last = turns[turns.length - 1];
+    const displayTurn = countGenerationTurns(s.turns);
     const repairNote = outcome.attempts > 1 ? `，尝试 ${outcome.attempts} 次（${lastTier}）` : "";
     if (outcome.repaired) {
       console.log(`[session ${s.id}] 本地修复：${outcome.repaired}`);
@@ -981,7 +1019,7 @@ app.post("/api/chat", async (req, res) => {
       spend: s.spend,
       limit,
       reply:
-        `已生成第 ${first.index}${groupCount > 1 ? `–${last.index}` : ""} 轮预览（${width}×${height}` +
+        `已生成第 ${displayTurn} 轮预览（${width}×${height}` +
         `${groupCount > 1 ? `，组图 ${groupCount} 张` : ""}${repairNote}，${lastTier}，本次 ¥${outcome.cost.toFixed(4)}）` +
         (outcome.repaired ? `；本地修正：${outcome.repaired}` : ""),
       image: `data:image/png;base64,${(firstPng ?? Buffer.alloc(0)).toString("base64")}`,

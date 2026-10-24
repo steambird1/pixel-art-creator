@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
@@ -89,14 +89,62 @@ export function loadSession(id: string): SessionState | null {
   }
 }
 
-export function listSessions(): Array<{ id: string; createdAt: string; turns: number; spend: number }> {
+export function deleteSession(id: string): boolean {
+  if (!/^[\w-]{1,32}$/.test(id)) return false;
+  const p = join(sessionsDir(), `${id}.json`);
+  if (!existsSync(p)) return false;
+  rmSync(p, { force: true });
+  return true;
+}
+
+/** 把组图变体合并成逻辑轮次：同一 groupId 只算一轮 */
+export function groupTurns(turns: TurnRecord[]): TurnRecord[][] {
+  const groups: TurnRecord[][] = [];
+  const byId = new Map<string, TurnRecord[]>();
+  for (const t of turns) {
+    if (t.groupId) {
+      const existing = byId.get(t.groupId);
+      if (existing) {
+        existing.push(t);
+        continue;
+      }
+    }
+    const group = [t];
+    groups.push(group);
+    if (t.groupId) byId.set(t.groupId, group);
+  }
+  return groups;
+}
+
+export function countGenerationTurns(turns: TurnRecord[]): number {
+  return groupTurns(turns).length;
+}
+
+export function listSessions(): Array<{
+  id: string;
+  createdAt: string;
+  turns: number;
+  images: number;
+  spend: number;
+}> {
   return readdirSync(sessionsDir())
     .filter((f) => f.endsWith(".json"))
     .map((f) => {
       const s = loadSession(f.replace(/\.json$/, ""));
-      return s ? { id: s.id, createdAt: s.createdAt, turns: s.turns.length, spend: s.spend } : null;
+      return s
+        ? {
+            id: s.id,
+            createdAt: s.createdAt,
+            turns: countGenerationTurns(s.turns),
+            images: s.turns.length,
+            spend: s.spend,
+          }
+        : null;
     })
-    .filter((x): x is { id: string; createdAt: string; turns: number; spend: number } => x !== null)
+    .filter(
+      (x): x is { id: string; createdAt: string; turns: number; images: number; spend: number } =>
+        x !== null,
+    )
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
