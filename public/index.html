@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>drawing_util · AI 像素画工坊</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <span class="logo">▦ drawing_util</span>
+    <span class="sub">DeepSeek 像素画 · 多轮对话</span>
+    <span class="spacer"></span>
+
+    <label class="ctl" title="仅 chat：最快最便宜；自动升级：空白/格式失败后逐级开启思考；深度思考：直接使用 high 档">思考模式
+      <select id="mode">
+        <option value="chat">仅 chat</option>
+        <option value="auto" selected>自动升级</option>
+        <option value="deep">深度思考</option>
+      </select>
+    </label>
+
+    <label class="ctl" title="本会话最多可花费的金额（人民币元），达到后停止生成">费用上限 ¥
+      <input id="costLimit" type="number" min="0" step="0.01" value="0.50" inputmode="decimal">
+    </label>
+    <span id="spend" class="spend" title="本会话累计实际费用">¥0.0000 / ¥0.50</span>
+
+    <label class="ctl">放大倍数
+      <select id="scale">
+        <option value="8">8×</option>
+        <option value="16" selected>16×</option>
+        <option value="32">32×</option>
+        <option value="64">64×</option>
+      </select>
+    </label>
+    <label class="ctl" title="本会话调色板：15 个不透明色 + 透明色；未设置时使用默认">调色板
+      <select id="palette"></select>
+    </label>
+    <a id="galleryLink" href="#" target="_blank" hidden>🖼 画廊</a>
+  </header>
+
+  <div class="layout">
+    <!-- 左：会话 + 对话 -->
+    <aside class="left">
+      <div class="session-bar">
+        <button id="newSessionBtn" title="新建会话">＋ 新会话</button>
+        <select id="sessionSelect" title="切换会话"></select>
+      </div>
+      <div id="chat" class="chat"></div>
+      <div id="status" class="status" hidden></div>
+      <details id="traceBox" class="trace-box">
+        <summary>🖼 本地精确描摹（PNG · 不调用模型）</summary>
+        <div class="trace-row">
+          <input id="traceFile" type="file" accept="image/png">
+          <span id="traceFileHint" class="meta">选择 PNG</span>
+        </div>
+        <div class="trace-row">
+          <label>宽 <input id="traceWidth" type="number" min="4" max="256" placeholder="自动"></label>
+          <label>高 <input id="traceHeight" type="number" min="4" max="256" placeholder="自动"></label>
+          <label>缩放
+            <select id="traceResize">
+              <option value="nearest">最近邻</option>
+              <option value="area">面积平均</option>
+            </select>
+          </label>
+        </div>
+        <div class="trace-row">
+          <label><input id="traceAdaptive" type="checkbox"> 从图自适应 15 色</label>
+          <label><input id="traceDither" type="checkbox"> 抖动</label>
+        </div>
+        <div class="trace-row">
+          <label>透明阈值
+            <input id="traceAlpha" type="range" min="0" max="255" value="128">
+            <span id="traceAlphaVal" class="meta">128</span>
+          </label>
+          <button id="traceBtn" type="button" disabled>开始描摹</button>
+        </div>
+      </details>
+      <div class="composer-opts">
+        <label><input type="checkbox" id="groupToggle"> 组图</label>
+        <label title="1–9 张；勾选“AI 指定调色板”时以模型输出的 palette 行数为准">张数
+          <input id="groupCount" type="number" min="1" max="9" value="4" disabled>
+        </label>
+        <label title="允许 AI 用 palette 指令按你的描述自行选择调色板（预设或自定义 15 色）；组图时可为每张指定"><input type="checkbox" id="groupAiPalette"> AI 指定调色板</label>
+        <label title="为每张图单独选择调色板；不勾选时自动轮换预设（AI 指定调色板时不生效）"><input type="checkbox" id="groupPerPalette" disabled> 每图单独调色板</label>
+      </div>
+      <div id="groupPalettes" class="group-palettes" hidden></div>
+      <div class="composer-size" title="目标画布尺寸；tile 固定 16×16，例如 10×8 tiles = 160×128">
+        <span class="composer-size-label">画布</span>
+        <label>宽
+          <input id="sizeWidth" type="number" min="4" max="256" step="1" value="16" inputmode="numeric" aria-label="画布宽度（像素）">
+        </label>
+        <span class="size-x">×</span>
+        <label>高
+          <input id="sizeHeight" type="number" min="4" max="256" step="1" value="16" inputmode="numeric" aria-label="画布高度（像素）">
+        </label>
+        <select id="sizeUnit" title="画布尺寸的计量单位">
+          <option value="px">像素</option>
+          <option value="tile">tiles</option>
+        </select>
+        <span id="sizeHint" class="meta"></span>
+      </div>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="2" placeholder="描述你想要的像素画，例如：画一个红色药水瓶&#10;修改：瓶塞改成软木色 / 尺寸 32*32 / 复杂场景会自动拆 tile"></textarea>
+        <button type="submit" id="sendBtn">发送</button>
+      </form>
+    </aside>
+
+    <!-- 右：预览 -->
+    <main class="right">
+      <section class="preview-card">
+        <div class="preview-head">
+          <strong id="turnTitle">尚未生成</strong>
+          <span class="meta" id="turnMeta"></span>
+        </div>
+        <div class="stage">
+          <div id="stageInner" class="stage-inner" hidden>
+            <img id="previewImg" alt="预览图">
+            <div id="gridOverlay" class="grid-overlay" hidden></div>
+            <div id="tileOverlay" class="tile-overlay" hidden></div>
+          </div>
+          <div id="placeholder" class="placeholder">在左侧输入需求，生成后此处显示像素预览</div>
+        </div>
+        <div class="tools">
+          <label class="chk"><input type="checkbox" id="gridToggle"> 显示像素网格</label>
+          <label class="chk" title="每 16×16 像素显示一条 tile 边界线"><input type="checkbox" id="tileGridToggle"> 显示 tile 网格</label>
+          <a id="downloadBtn" href="#" download hidden>⬇ 下载 PNG</a>
+          <button id="copyBtn" hidden>📋 复制 JS</button>
+          <button id="backBtn" hidden>↩ 回到此轮</button>
+        </div>
+        <div id="tileInfo" class="tile-info" hidden></div>
+        <details id="tileBox" hidden>
+          <summary>Tile 复用 / 智能合并</summary>
+          <div id="tileSmart" class="tile-smart">
+            <div class="tile-smart-row">
+              <label>误差阈值 ε
+                <input id="tileEpsilon" type="range" min="0" max="1200" step="10" value="600">
+              </label>
+              <span id="tileEpsilonVal" class="meta">600</span>
+              <button id="tilePlanBtn" type="button">分析</button>
+            </div>
+            <canvas id="tileCurve" width="520" height="120"></canvas>
+            <div id="tilePlanStats" class="tile-note"></div>
+            <div id="tilePlanGroups" class="tile-groups"></div>
+            <div class="tile-smart-actions">
+              <button id="tileBatchPreview" type="button">批量预览合并…</button>
+              <button id="tileUndoBtn" type="button" hidden>撤销合并</button>
+            </div>
+          </div>
+          <div id="tileGroups" class="tile-groups"></div>
+          <p class="tile-note">
+            合并只影响当前预览与 JavaScript 产物，不改写多轮对话的原始 DSL；可随时撤销或换 ε 重算。
+          </p>
+        </details>
+        <details id="paletteBox" class="palette-box">
+          <summary>调色板 / 组图变体</summary>
+          <div class="palette-row">
+            <button id="paletteVariantsBtn" type="button">生成调色板变体</button>
+            <span id="paletteHint" class="meta">同一构图，仅更换调色板（不调用模型）</span>
+          </div>
+          <div id="paletteVariants" class="palette-variants"></div>
+          <div id="customPalette" class="custom-palette" hidden>
+            <div class="meta">自定义 15 色（透明色固定为槽 0）</div>
+            <div id="customSwatches" class="custom-swatches"></div>
+            <div class="palette-row">
+              <button id="customApply" type="button">应用自定义调色板</button>
+              <button id="customReset" type="button">恢复当前</button>
+            </div>
+          </div>
+        </details>
+        <details id="codeBox" hidden>
+          <summary>JavaScript 代码（点击展开）</summary>
+          <div class="code-toolbar">
+            <button id="copyCodeBtn" type="button">📋 复制代码</button>
+          </div>
+          <pre id="codePre"></pre>
+        </details>
+        <details id="dslBox" hidden>
+          <summary>DSL 源（可手动编辑）</summary>
+          <div class="dsl-toolbar">
+            <button id="dslEditBtn" type="button">✏️ 编辑 DSL</button>
+            <button id="dslSaveBtn" type="button" hidden>✅ 应用更改</button>
+            <button id="dslCancelBtn" type="button" hidden>↩️ 撤销更改</button>
+            <span id="dslEditHint" class="meta">修改只在点击“应用更改”后生效；不调用模型，不计费</span>
+          </div>
+          <pre id="dslPre"></pre>
+          <textarea id="dslEditArea" class="dsl-edit" rows="16" spellcheck="false" aria-label="DSL 源码" hidden></textarea>
+          <div id="dslError" class="dsl-error" role="alert" hidden></div>
+        </details>
+      </section>
+
+      <section class="history-card">
+        <div class="preview-head"><strong>历史轮次</strong><span class="meta">点击缩略图查看 · “回到此轮”可从该图继续修改</span></div>
+        <div id="history" class="history"><span class="meta">暂无</span></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="mergePreview" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="mergeTitle">
+      <div class="modal-head">
+        <strong id="mergeTitle">合并预览</strong>
+        <button id="mergeClose" type="button" title="关闭">✕</button>
+      </div>
+      <div id="mergeStats" class="merge-stats" aria-live="polite">正在生成预览…</div>
+      <div class="merge-compare">
+        <figure>
+          <img id="mergeBefore" alt="合并前">
+          <figcaption>合并前</figcaption>
+        </figure>
+        <figure>
+          <img id="mergeAfter" alt="合并后">
+          <figcaption>合并后</figcaption>
+        </figure>
+        <figure>
+          <img id="mergeDiff" alt="差异高亮">
+          <figcaption>差异高亮（洋红 = 变化像素）</figcaption>
+        </figure>
+      </div>
+      <p class="tile-note">
+        确认后会用代表 tile 替换相似 tile，并重新生成当前预览与 JavaScript 产物；
+        不会改写多轮对话的原始 DSL。差异图只显示变化像素，未变化区域为深色。
+      </p>
+      <div class="modal-actions">
+        <button id="mergeCancel" type="button">取消</button>
+        <button id="mergeConfirm" type="button" class="primary" disabled>确认合并</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
